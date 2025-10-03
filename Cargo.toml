@@ -1,0 +1,15 @@
+[package]
+name = "tri-kernel"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bootloader = "0.9.33"
+x86_64 = "0.14.13"
+spin = "0.9.8"
+lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
+pic8259 = "0.10.4"
+volatile = "0.2.7"  # Versão CORRIGIDA - a 0.4.6 não funciona com seu código
+
+[build-dependencies]
+bootimage = "0.10.3"
