@@ -1,3 +1,8 @@
+// src/tri_compress.rs
+// ====================
+// DRIVER NATIVO TRI - Compressão no Metal
+// ====================
+
 pub fn compress(data: &[u8; 32]) -> [u8; 64] {
     let mut compressed = [0u8; 64];
     let mut idx = 0usize;
@@ -45,5 +50,13 @@ pub fn compress_str(input: &str) -> [u8; 64] {
     let bytes = input.as_bytes();
     let len = bytes.len().min(32);
     data[..len].copy_from_slice(&bytes[..len]);
-    compress(&data)  // Chama direto (sem Self)
+    compress(&data)
+}
+
+// Fix: Stats único (sem duplicate, _original pra unused)
+pub fn stats(_original: &[u8; 32], compressed: &[u8; 64]) -> (u32, u32, u8) {
+    let orig_len = 32u32;
+    let comp_len = compressed.iter().position(|&x| x == 0).unwrap_or(64) as u32;
+    let ratio = if comp_len > 0 { (orig_len * 100 / comp_len) as u8 } else { 100 };
+    (orig_len, comp_len, ratio)
 }
