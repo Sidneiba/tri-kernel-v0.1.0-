@@ -1,1 +1,0 @@
-/root/tri-kernel/target/x86_64-unknown-none/debug/tri-kernel: /root/tri-kernel/src/interrupts.rs /root/tri-kernel/src/keyboard.rs /root/tri-kernel/src/main.rs /root/tri-kernel/src/tri_compress.rs /root/tri-kernel/src/vga.rs /root/tri-kernel/src/virtual_fs.rs
