@@ -1,1 +1,6 @@
-/target
+target/
+*.bin
+-drive
+-m
+-nographic
+-serial/target

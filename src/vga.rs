@@ -1,6 +1,9 @@
+use core::fmt;
 use spin::Mutex;
-use core::ptr::{read_volatile, write_volatile};
+use lazy_static::lazy_static;
+use volatile::Volatile;
 
+// --- VGA Colors ---
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -23,140 +26,143 @@ pub enum Color {
     White = 15,
 }
 
-const BUFFER_HEIGHT: usize = 25;
-const BUFFER_WIDTH: usize = 80;
-const VGA_BUFFER: usize = 0xb8000;
-
+// --- VGA Character ---
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(transparent)]
-struct VgaChar(u16);
-
-impl VgaChar {
-    fn new(ascii: u8, fg: Color, bg: Color) -> Self {
-        VgaChar(
-            (u16::from(ascii))
-                | (u16::from(fg as u8 & 0xf) << 8)
-                | (u16::from(bg as u8 & 0xf) << 12)
-        )
-    }
+#[repr(C)]
+struct VgaChar {
+    ascii: u8,
+    color: u8,
 }
 
+// --- VGA Writer ---
 pub struct Writer {
-    column_position: usize,
-    color_code: u8,
-    buffer: *mut u16,
+    row: usize,
+    column: usize,
+    color: u8,
+    buffer: &'static mut [Volatile<VgaChar>; 25 * 80],
+}
+
+lazy_static! {
+    pub static ref WRITER: Mutex<Writer> = Mutex::new(Writer {
+        row: 0,
+        column: 0,
+        color: make_color(Color::White, Color::Black),
+        buffer: unsafe {
+            &mut *(0xb8000 as *mut [Volatile<VgaChar>; 25 * 80])
+        },
+    });
+}
+
+fn make_color(fg: Color, bg: Color) -> u8 {
+    fg as u8 | (bg as u8) << 4
 }
 
 impl Writer {
-    pub fn new(fg: Color, bg: Color) -> Self {
-        Writer {
-            column_position: 0,
-            color_code: (fg as u8 & 0xf) | ((bg as u8 & 0xf) << 4),
-            buffer: VGA_BUFFER as *mut u16,
-        }
-    }
-
     pub fn write_byte(&mut self, byte: u8) {
         match byte {
             b'\n' => self.new_line(),
+            8 | b'\x7F' => {
+                if self.column > 0 {
+                    self.column -= 1;
+                    self.buffer[self.row * 80 + self.column] = Volatile::new(VgaChar {
+                        ascii: b' ',
+                        color: self.color,
+                    });
+                }
+            }
             byte => {
-                if self.column_position >= BUFFER_WIDTH {
+                if self.column >= 80 {
                     self.new_line();
                 }
-
-                let row = BUFFER_HEIGHT - 1;
-                let col = self.column_position;
-                let offset = (row * BUFFER_WIDTH + col) as usize;
-
-                unsafe {
-                    write_volatile(self.buffer.add(offset), VgaChar::new(byte, Color::LightCyan, Color::Black).0);
-                }
-                self.column_position += 1;
-            }
-        }
-    }
-
-    fn new_line(&mut self) {
-        for row in 1..BUFFER_HEIGHT {
-            for col in 0..BUFFER_WIDTH {
-                let offset_from = (row * BUFFER_WIDTH + col) as usize;
-                let offset_to = ((row - 1) * BUFFER_WIDTH + col) as usize;
-
-                unsafe {
-                    let char_from = read_volatile(self.buffer.add(offset_from));
-                    write_volatile(self.buffer.add(offset_to), char_from);
-                }
-            }
-        }
-        self.clear_row(BUFFER_HEIGHT - 1);
-        self.column_position = 0;
-    }
-
-    fn clear_row(&mut self, row: usize) {
-        let blank = VgaChar::new(b' ', Color::LightCyan, Color::Black).0;
-        for col in 0..BUFFER_WIDTH {
-            let offset = (row * BUFFER_WIDTH + col) as usize;
-            unsafe {
-                write_volatile(self.buffer.add(offset), blank);
+                let index = self.row * 80 + self.column;
+                self.buffer[index] = Volatile::new(VgaChar {
+                    ascii: byte,
+                    color: self.color,
+                });
+                self.column += 1;
             }
         }
     }
 
     pub fn write_string(&mut self, s: &str) {
         for byte in s.bytes() {
-            match byte {
-                0x20..=0x7e | b'\n' => self.write_byte(byte),
-                _ => self.write_byte(0xfe),
+            self.write_byte(byte);
+        }
+    }
+
+    fn new_line(&mut self) {
+        if self.row < 24 {
+            self.row += 1;
+        } else {
+            for row in 0..24 {
+                for col in 0..80 {
+                    let index = row * 80 + col;
+                    let next_index = (row + 1) * 80 + col;
+                    self.buffer[index] = Volatile::new(self.buffer[next_index].read());
+                }
+            }
+            for col in 0..80 {
+                self.buffer[24 * 80 + col] = Volatile::new(VgaChar {
+                    ascii: b' ',
+                    color: self.color,
+                });
             }
         }
+        self.column = 0;
     }
 
     pub fn clear_screen(&mut self) {
-        let blank = VgaChar::new(b' ', Color::LightCyan, Color::Black).0;
-        for i in 0..(BUFFER_HEIGHT * BUFFER_WIDTH) {
-            unsafe {
-                write_volatile(self.buffer.add(i), blank);
+        for row in 0..25 {
+            for col in 0..80 {
+                self.buffer[row * 80 + col] = Volatile::new(VgaChar {
+                    ascii: b' ',
+                    color: self.color,
+                });
             }
         }
-        self.column_position = 0;
+        self.row = 0;
+        self.column = 0;
     }
 }
 
-impl core::fmt::Write for Writer {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+impl fmt::Write for Writer {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
         self.write_string(s);
         Ok(())
     }
 }
 
-// Fix: pub static mut WRITER
-pub static mut WRITER: Option<Mutex<Writer>> = None;
+// Implementa shell::Writer para vga::Writer
+impl crate::shell::Writer for Writer {
+    fn write_byte(&mut self, byte: u8) {
+        self.write_byte(byte);
+    }
 
-// Fix: init_vga fn
-pub fn init_vga(fg: Color, bg: Color) {
-    unsafe {
-        WRITER = Some(Mutex::new(Writer::new(fg, bg)));
+    fn write_string(&mut self, s: &str) {
+        self.write_string(s);
     }
 }
 
-// Fix: pub get_writer
+// --- VGA Init ---
+pub fn init_vga(fg: Color, bg: Color) {
+    let mut writer = WRITER.lock();
+    writer.color = make_color(fg, bg);
+    writer.clear_screen();
+}
+
 pub fn get_writer() -> &'static Mutex<Writer> {
-    unsafe { WRITER.as_ref().unwrap() }
+    &WRITER
 }
 
 #[macro_export]
 macro_rules! print {
-    ($($arg:tt)*) => ($crate::vga::_print(format_args!($($arg)*)));
+    ($($arg:tt)*) => {
+        $crate::vga::get_writer().lock().write_fmt(format_args!($($arg)*)).unwrap();
+    };
 }
 
 #[macro_export]
 macro_rules! println {
     () => ($crate::print!("\n"));
     ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
-}
-
-#[doc(hidden)]
-pub fn _print(args: core::fmt::Arguments) {
-    use core::fmt::Write;
-    get_writer().lock().write_fmt(args).unwrap();
 }
